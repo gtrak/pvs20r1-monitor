@@ -20,7 +20,7 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-if ! command -v python3 &>/dev/null; then
+if ! which python3 >/dev/null 2>&1 && [ ! -f /usr/bin/python3 ]; then
     echo "ERROR: python3 not found."
     exit 1
 fi
