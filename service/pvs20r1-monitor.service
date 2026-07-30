@@ -1,0 +1,17 @@
+[Unit]
+Description=PVS20R1 Solar Monitor (Prometheus exporter)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 REPLACE_DIR/pvs20r1_monitor.py
+WorkingDirectory=REPLACE_DIR
+Restart=always
+RestartSec=10
+User=REPLACE_USER
+Group=REPLACE_USER
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+logs/
+logs/*.log
+logs/monitor.pid
