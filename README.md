@@ -55,7 +55,7 @@ Zero external dependencies — Python stdlib only.
 | `pvs_inverter_dc_current_a` | gauge | DC current |
 | `pvs_inverter_heatsink_temp_c` | gauge | Heat sink temperature |
 | `pvs_inverter_lifetime_energy_kwh` | gauge | Total lifetime energy produced |
-| `pvs_inverter_data_age_seconds` | gauge | Seconds since last refresh timestamp |
+
 
 ### State model
 
@@ -159,4 +159,4 @@ Built from these projects:
 
 - **[blog.gruby.com — Monitoring a SunPower Solar System](https://blog.gruby.com/2020/04/28/monitoring-a-sunpower-solar-system.html)** — Describes the LAN2 port setup (172.27.153.1/24, LAN1 runs DHCP), HTML scraping approach, and why local monitoring matters (SunPower's cloud only showed aggregate, not per-inverter). Also documents using a Pi as an HTTP proxy between WiFi and the PVS gateway.
 
-- **[ha-esunpower](https://github.com/sm
+- **[smcneece/ha-esunpower](https://github.com/smcneece/ha-esunpower)** — Home Assistant integration for SunPower PVS5/PVS6 gateways. Local API, no cloud required. Demonstrates the varserver API and direct PVS communication that informed this project's approach.
