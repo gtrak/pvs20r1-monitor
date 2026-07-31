@@ -34,7 +34,6 @@ POLL_INTERVAL = 300        # seconds between polls
 LISTEN_ADDR = "0.0.0.0"
 LISTEN_PORT = 8080
 LOG_DIR = Path(__file__).resolve().parent / "logs"
-DAYLIGHT_HOURS = (6, 19)   # hour range considered daylight
 PRODUCING_THRESHOLD_W = 10  # watts above which an inverter counts as "producing"
 
 
@@ -151,7 +150,6 @@ class CollectorState:
         self.start_time = time.time()
         self.inverters: list[dict] = []
         self.last_poll_time: float = 0
-        self.is_daylight = False
         self.system_state = 0  # 0=unknown, 1=offline, 2=partial, 3=producing
         self.errors: list[str] = []
 
@@ -211,10 +209,6 @@ def collect_once():
                     serials = list(dict.fromkeys(serials))
             except Exception as e:
                 state.errors.append(f"Main page fetch failed: {e}")
-
-        # Determine daylight
-        is_daylight = DAYLIGHT_HOURS[0] <= now.hour < DAYLIGHT_HOURS[1]
-        state.is_daylight = is_daylight
 
         inverters = []
         total_power = 0.0
@@ -283,21 +277,19 @@ def collect_once():
         state.scrape_success += 1
 
         # System state: 0=unknown, 1=offline, 2=partial, 3=producing
-        if is_daylight and len(inverters) > 0:
+        if len(inverters) > 0:
             if producing_count == len(inverters):
                 state.system_state = 3
             elif producing_count > 0:
                 state.system_state = 2
             else:
                 state.system_state = 1
-        elif not is_daylight:
-            state.system_state = 0
         else:
             state.system_state = 0
 
         logger.info(
-            "System state=%d (daylight=%s, %d/%d producing, %.1fW total)",
-            state.system_state, is_daylight, producing_count, len(inverters), total_power
+            "System state=%d (%d/%d producing, %.1fW total)",
+            state.system_state, producing_count, len(inverters), total_power
         )
 
     except Exception as e:
@@ -341,10 +333,7 @@ def format_metrics() -> str:
     metric("pvs_gateway_up", state.gateway_up,
            help_text="1 if gateway reachable, 0 otherwise")
     metric("pvs_system_state", state.system_state,
-           help_text="0=unknown, 1=offline (no power during day), "
-                      "2=partial (some inverters down), 3=producing")
-    metric("pvs_is_daylight", 1 if state.is_daylight else 0,
-           help_text="1 if current time is within daylight hours")
+           help_text="0=unknown, 1=offline, 2=partial, 3=producing")
 
     # Per-inverter metrics
     for inv in state.inverters:
@@ -418,7 +407,6 @@ class MetricsHandler(BaseHTTPRequestHandler):
             status = {
                 "gateway_up": bool(state.gateway_up),
                 "system_state": state.system_state,
-                "is_daylight": state.is_daylight,
                 "total_ac_power_w": state.total_ac_power_w,
                 "inverter_count": state.inverter_count,
                 "inverters": state.inverters,
@@ -439,7 +427,6 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 "state": {
                     "gateway_up": state.gateway_up,
                     "system_state": state.system_state,
-                    "is_daylight": state.is_daylight,
                     "inverter_count": state.inverter_count,
                     "total_ac_power_w": state.total_ac_power_w,
                 },

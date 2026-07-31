@@ -35,7 +35,6 @@ Zero external dependencies — Python stdlib only.
 |---|---|---|
 | `pvs_gateway_up` | gauge | 1 if reachable, 0 otherwise |
 | `pvs_system_state` | gauge | 0=unknown, 1=offline, 2=partial, 3=producing |
-| `pvs_is_daylight` | gauge | 1 if current hour is within daylight window |
 | `pvs_inverter_count` | gauge | Number of inverters found |
 | `pvs_total_ac_power_w` | gauge | Sum of all inverter AC power (watts) |
 | `pvs_scrape_duration_seconds` | gauge | Last poll duration |
@@ -59,11 +58,11 @@ Zero external dependencies — Python stdlib only.
 
 ### State model
 
-System state tracks whether panels are producing vs offline during daylight hours. Unlike data age (which just climbs after the gateway stops responding), the state enum captures the actual operating condition — so a brief outage shows as `state=1` for its duration, then returns to `state=3` when production resumes.
+System state tracks whether panels are producing vs offline. The state enum captures the actual operating condition — so a brief outage shows as `state=1` for its duration, then returns to `state=3` when production resumes.
 
 **System states:**
-- `0` — unknown (nighttime or no data)
-- `1` — offline (all inverters at zero power during daylight)
+- `0` — unknown (no data)
+- `1` — offline (all inverters at zero power)
 - `2` — partial (some inverters producing, others not)
 - `3` — producing (all inverters above threshold)
 
@@ -118,8 +117,8 @@ scrape_configs:
 # Gateway down
 pvs_gateway_up == 0
 
-# System offline during daylight hours
-pvs_system_state == 1 and pvs_is_daylight == 1
+# System offline
+pvs_system_state == 1
 
 # Partial outage (some inverters down)
 pvs_system_state == 2
@@ -127,11 +126,8 @@ pvs_system_state == 2
 # Inverter offline
 pvs_inverter_state == 1
 
-# Data stale (> 15 min)
-pvs_inverter_data_age_seconds > 900
-
-# Total power below threshold during daylight
-pvs_is_daylight == 1 and pvs_total_ac_power_w < 100
+# Total power below threshold
+pvs_total_ac_power_w < 100
 ```
 
 ## Troubleshooting
