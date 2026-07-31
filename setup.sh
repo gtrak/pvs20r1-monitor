@@ -76,8 +76,9 @@ systemctl daemon-reload
 systemctl enable pvs20r1-monitor 2>/dev/null || true
 echo "  Service: pvs20r1-monitor"
 
-# Create logs directory
+# Create logs directory and fix ownership
 mkdir -p "${INSTALL_DIR}/logs"
+chown -R "${CURRENT_USER}:${CURRENT_USER}" "${INSTALL_DIR}"
 echo "  Logs: ${INSTALL_DIR}/logs/monitor.log"
 
 # ── Test ──────────────────────────────────────────────────────────────────────
