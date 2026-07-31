@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-HOST="solar-pi"
+HOST="solar-pi.lan"
 PORT="8080"
 JOB="solar_pi"
 LAT="38.9784"
