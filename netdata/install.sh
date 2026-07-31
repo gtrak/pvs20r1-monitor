@@ -81,9 +81,39 @@ grep -qs '^enable_all_charts="yes"' /etc/netdata/charts.d.conf || \
 grep -qs '^solar=yes' /etc/netdata/charts.d.conf || \
   echo 'solar=yes' >> /etc/netdata/charts.d.conf
 
+# Pre-flight: warn if the exporter isn't up. go.d's prometheus job does NOT
+# auto-recover from a startup-time scrape failure (it gets quarantined), so
+# if netdata is (re)started while the exporter is down, NO solar charts will
+# appear until netdata is restarted again AFTER the exporter comes up.
+# This is the exact failure mode where install.sh "succeeds" but the
+# integration is silently dead.
+EXPORTER_URL="http://$HOST:$PORT/metrics"
+EXPORTER_UP=0
+if command -v curl >/dev/null 2>&1; then
+  if curl -fsS --max-time 5 "$EXPORTER_URL" >/dev/null 2>&1; then
+    EXPORTER_UP=1
+  fi
+else
+  echo "NOTE: curl not found; skipping exporter pre-flight check." >&2
+fi
+if [ "$EXPORTER_UP" -eq 1 ]; then
+  echo "Pre-flight: exporter $EXPORTER_URL is reachable."
+else
+  echo "WARNING: exporter $EXPORTER_URL is not reachable." >&2
+  echo "         The pvs20r1-monitor exporter must be running on '$HOST' (port $PORT)" >&2
+  echo "         before Netdata can collect solar data. Configs are still installed." >&2
+  echo "         If you restart netdata now, go.d will quarantine the solar_pi job and" >&2
+  echo "         produce NO charts until you restart netdata again AFTER the exporter" >&2
+  echo "         is up." >&2
+fi
+
 if [ "$RESTART" -eq 1 ]; then
   echo "Restarting netdata..."
   systemctl restart netdata
+  if [ "$EXPORTER_UP" -ne 1 ]; then
+    echo "WARNING: netdata restarted while exporter was down -- solar charts will be" >&2
+    echo "         missing. Bring the exporter up, then: sudo systemctl restart netdata" >&2
+  fi
 fi
 
 echo "Done. Alarms: solar_fault, solar_not_generating, solar_no_data"
