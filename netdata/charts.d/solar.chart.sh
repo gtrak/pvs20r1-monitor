@@ -7,10 +7,8 @@
 # "Daytime" is computed locally from sun elevation (no producer is_daylight
 # flag -- that was unreliable and has been removed). Pure-python, no deps.
 #
-# Config (netdata/charts.d/solar.conf):
-#   solar_lat / solar_lon     -- site coordinates (default: Annapolis, MD)
-#   solar_dc_threshold        -- DC volts above which panels should produce (300)
-#   solar_dc_dead             -- DC volts below which inverter is "off" (10)
+# No host is hardcoded here. solar_url (and site lat/lon) come from
+# solar.conf, which netdata/install.sh renders from templates.
 #
 # Install: copy to /usr/libexec/netdata/charts.d/solar.chart.sh (charts.d.plugin
 # only scans its own stock dir for .chart.sh files) and set `solar=yes` (NOT
@@ -21,7 +19,11 @@
 solar_update_every=10
 solar_priority=95000
 
-solar_lat="${solar_lat:-38.9784}"        # Annapolis, MD
+# Set in solar.conf (rendered by install.sh). No hardcoded host in this module.
+solar_url="${solar_url:-}"
+
+# Site defaults (Annapolis, MD) only used if solar.conf doesn't set them.
+solar_lat="${solar_lat:-38.9784}"
 solar_lon="${solar_lon:--76.4921}"
 solar_dc_threshold="${solar_dc_threshold:-300}"
 solar_dc_dead="${solar_dc_dead:-10}"
@@ -29,13 +31,15 @@ solar_dc_dead="${solar_dc_dead:-10}"
 solar_not_generating=
 
 solar_get() {
+  [ -z "$solar_url" ] && { error "solar: solar_url not set (configure in solar.conf)"; return 1; }
   local vals
-  vals=$(python3 - "$solar_lat" "$solar_lon" "$solar_dc_threshold" "$solar_dc_dead" <<'PY' 2>/dev/null
+  vals=$(python3 - "$solar_url" "$solar_lat" "$solar_lon" "$solar_dc_threshold" "$solar_dc_dead" <<'PY' 2>/dev/null
 import math, json, sys, urllib.request
 from datetime import datetime, timezone
 
-lat = float(sys.argv[1]); lon = float(sys.argv[2])
-dc_thr = float(sys.argv[3]); dc_dead = float(sys.argv[4])
+url = sys.argv[1]
+lat = float(sys.argv[2]); lon = float(sys.argv[3])
+dc_thr = float(sys.argv[4]); dc_dead = float(sys.argv[5])
 
 def sun_elevation(t):
     doy = t.timetuple().tm_yday
@@ -50,7 +54,7 @@ def sun_elevation(t):
         math.sin(lr)*math.sin(dr) + math.cos(lr)*math.cos(dr)*math.cos(ha)))
 
 try:
-    with urllib.request.urlopen("http://solar-pi:8080/", timeout=8) as r:
+    with urllib.request.urlopen(url, timeout=8) as r:
         d = json.load(r)
 except Exception:
     print("ERR"); sys.exit()
@@ -75,7 +79,7 @@ PY
 }
 
 solar_check() {
-  solar_get || { error "solar: cannot fetch from http://solar-pi:8080/"; return 1; }
+  solar_get || return 1
   return 0
 }
 

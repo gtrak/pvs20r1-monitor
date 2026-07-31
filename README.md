@@ -155,27 +155,27 @@ units deterministically instead of guessing.
 
 ### Netdata install
 
+The `netdata/` files are **templates** with placeholder tokens
+(`__SOLAR_HOST__`, `__SOLAR_PORT__`, `__SOLAR_JOB__`, `__SOLAR_LAT__`,
+`__SOLAR_LON__`); no host is hardcoded. `netdata/install.sh` renders them
+and installs everything (it also keeps the go.d job name consistent across
+the scrape config and the health alarms).
+
 ```bash
-# On the Netdata host (replace <repo> with your checkout):
-sudo cp <repo>/netdata/go.d/prometheus.conf     /etc/netdata/go.d/
-sudo cp <repo>/netdata/health.d/solar.conf     /etc/netdata/health.d/
+# Defaults: host=solar-pi  port=8080  job=solar_pi  lat/lon=Annapolis, MD
+sudo ./netdata/install.sh
 
-# charts.d.plugin only scans its stock dir for *.chart.sh:
-sudo cp <repo>/netdata/charts.d/solar.chart.sh /usr/libexec/netdata/charts.d/
-sudo cp <repo>/netdata/charts.d/solar.conf     /etc/netdata/charts.d/
+# Custom host + site coordinates:
+sudo ./netdata/install.sh --host 192.168.1.50 --lat 40.7128 --lon -74.0060
 
-# Enable the charts.d module (custom modules need =yes, NOT =force):
-sudo tee -a /etc/netdata/charts.d.conf >/dev/null <<'EOF'
-enable_all_charts="yes"
-solar=yes
-EOF
-
-# Set your site coordinates (default: Annapolis, MD):
-sudo sed -i 's/^solar_lat=.*/solar_lat=<YOUR_LAT>/; s/^solar_lon=.*/solar_lon=<YOUR_LON>/' \
-  /etc/netdata/charts.d/solar.conf
-
-sudo systemctl restart netdata
+# Render only, don't restart netdata (e.g. to review first):
+sudo ./netdata/install.sh --no-restart
 ```
+
+`install.sh` copies the charts.d module into `/usr/libexec/netdata/charts.d/`
+(charts.d.plugin only scans its stock dir for `*.chart.sh`), enables the
+module in `charts.d.conf` (custom modules need `solar=yes`, **not** `=force`),
+and restarts netdata. See `./netdata/install.sh --help` for all options.
 
 Discord notifications: set `DISCORD_WEBHOOK_URL` and `DEFAULT_RECIPIENT_DISCORD`
 in `/etc/netdata/health_alarm_notify.conf`; the alarms ship with `to: discord`.
