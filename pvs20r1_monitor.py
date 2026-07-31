@@ -343,23 +343,23 @@ def format_metrics() -> str:
                help_text="0=unknown, 1=offline, 2=idle, 3=producing")
 
         if inv.get("avg_ac_power") is not None:
-            metric("pvs_inverter_ac_power_w", inv["power_w"], lbl,
+            metric("pvs_inverter_ac_power_watts", inv["power_w"], lbl,
                    help_text="Instantaneous AC power output (watts)")
         if inv.get("avg_ac_voltage") is not None:
-            metric("pvs_inverter_ac_voltage_v", inv["avg_ac_voltage"], lbl,
+            metric("pvs_inverter_ac_voltage_volts", inv["avg_ac_voltage"], lbl,
                    help_text="AC voltage (volts)")
         if inv.get("avg_ac_current") is not None:
-            metric("pvs_inverter_ac_current_a", inv["avg_ac_current"], lbl,
+            metric("pvs_inverter_ac_current_amps", inv["avg_ac_current"], lbl,
                    help_text="AC current (amps)")
         if inv.get("avg_dc_voltage") is not None:
-            metric("pvs_inverter_dc_voltage_v", inv["avg_dc_voltage"], lbl,
+            metric("pvs_inverter_dc_voltage_volts", inv["avg_dc_voltage"], lbl,
                    help_text="DC voltage (volts)")
         if inv.get("avg_dc_current") is not None:
-            metric("pvs_inverter_dc_current_a", inv["avg_dc_current"], lbl,
+            metric("pvs_inverter_dc_current_amps", inv["avg_dc_current"], lbl,
                    help_text="DC current (amps)")
         if inv.get("avg_heatsink_temp") is not None:
-            metric("pvs_inverter_heatsink_temp_c", inv["avg_heatsink_temp"], lbl,
-                   help_text="Heat sink temperature (C)")
+            metric("pvs_inverter_heatsink_temp_celsius", inv["avg_heatsink_temp"], lbl,
+                   help_text="Heat sink temperature (celsius)")
         if inv.get("lifetime_energy_kwh") is not None:
             metric("pvs_inverter_lifetime_energy_kwh", inv["lifetime_energy_kwh"], lbl,
                    help_text="Total lifetime energy produced (kWh)")
@@ -368,7 +368,7 @@ def format_metrics() -> str:
     metric("pvs_inverter_count", state.inverter_count,
            help_text="Number of inverters found")
     if state.total_ac_power_w is not None:
-        metric("pvs_total_ac_power_w", state.total_ac_power_w,
+        metric("pvs_total_ac_power_watts", state.total_ac_power_w,
                help_text="Sum of all inverter AC power (watts)")
     metric("pvs_scrape_duration_seconds", round(state.scrape_duration_s, 3),
            help_text="Last poll duration (seconds)")

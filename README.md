@@ -36,7 +36,7 @@ Zero external dependencies — Python stdlib only.
 | `pvs_gateway_up` | gauge | 1 if reachable, 0 otherwise |
 | `pvs_system_state` | gauge | 0=unknown, 1=offline, 2=partial, 3=producing |
 | `pvs_inverter_count` | gauge | Number of inverters found |
-| `pvs_total_ac_power_w` | gauge | Sum of all inverter AC power (watts) |
+| `pvs_total_ac_power_watts` | gauge | Sum of all inverter AC power (watts) |
 | `pvs_scrape_duration_seconds` | gauge | Last poll duration |
 | `pvs_scrape_success` | counter | Successful poll cycles |
 | `pvs_scrape_failures` | counter | Failed poll cycles |
@@ -47,13 +47,13 @@ Zero external dependencies — Python stdlib only.
 | Name | Type | Description |
 |---|---|---|
 | `pvs_inverter_state` | gauge | 0=unknown, 1=offline, 2=idle, 3=producing |
-| `pvs_inverter_ac_power_w` | gauge | AC power output (watts) |
-| `pvs_inverter_ac_voltage_v` | gauge | AC voltage |
-| `pvs_inverter_ac_current_a` | gauge | AC current |
-| `pvs_inverter_dc_voltage_v` | gauge | DC voltage |
-| `pvs_inverter_dc_current_a` | gauge | DC current |
-| `pvs_inverter_heatsink_temp_c` | gauge | Heat sink temperature |
-| `pvs_inverter_lifetime_energy_kwh` | gauge | Total lifetime energy produced |
+| `pvs_inverter_ac_power_watts` | gauge | AC power output (watts) |
+| `pvs_inverter_ac_voltage_volts` | gauge | AC voltage (volts) |
+| `pvs_inverter_ac_current_amps` | gauge | AC current (amps) |
+| `pvs_inverter_dc_voltage_volts` | gauge | DC voltage (volts) |
+| `pvs_inverter_dc_current_amps` | gauge | DC current (amps) |
+| `pvs_inverter_heatsink_temp_celsius` | gauge | Heat sink temperature (celsius) |
+| `pvs_inverter_lifetime_energy_kwh` | gauge | Total lifetime energy produced (kWh) |
 
 
 ### State model
@@ -127,8 +127,58 @@ pvs_system_state == 2
 pvs_inverter_state == 1
 
 # Total power below threshold
-pvs_total_ac_power_w < 100
+pvs_total_ac_power_watts < 100
 ```
+
+## Netdata integration
+
+The `netdata/` directory contains a complete alerting integration for Netdata:
+
+- `go.d/prometheus.conf` — scrapes `http://solar-pi:8080/metrics` and
+  auto-creates one chart per `pvs_*` metric. Metric names use full-unit
+  suffixes (`_volts`, `_amps`, `_watts`, `_celsius`) so Netdata's
+  auto-derived unit labels are human-readable.
+- `charts.d/solar.chart.sh` + `charts.d/solar.conf` — a small bash/python
+  collector that publishes a derived `solar.not_generating` gauge. It gates on
+  sun elevation (computed locally from your lat/lon, no `is_daylight` flag
+  needed) and panel DC voltage, so the alarm distinguishes "daytime fault"
+  from "night" — the one case the raw metrics alone can't cover (an inverter
+  fully off during the day reads DC~0V, indistinguishable from night).
+- `health.d/solar.conf` — three alarms: `solar_fault` (gateway unreachable),
+  `solar_not_generating` (daytime + not producing, 30 min sustained), and
+  `solar_no_data` (exporter stopped sending data).
+
+Metric names use full-unit words rather than single-letter suffixes
+(`_amps` not `_a`) per the [Prometheus naming guidance](https://prometheus.io/docs/practices/naming/),
+so any Prometheus consumer (Grafana, Prometheus, Netdata) derives readable
+units deterministically instead of guessing.
+
+### Netdata install
+
+```bash
+# On the Netdata host (replace <repo> with your checkout):
+sudo cp <repo>/netdata/go.d/prometheus.conf     /etc/netdata/go.d/
+sudo cp <repo>/netdata/health.d/solar.conf     /etc/netdata/health.d/
+
+# charts.d.plugin only scans its stock dir for *.chart.sh:
+sudo cp <repo>/netdata/charts.d/solar.chart.sh /usr/libexec/netdata/charts.d/
+sudo cp <repo>/netdata/charts.d/solar.conf     /etc/netdata/charts.d/
+
+# Enable the charts.d module (custom modules need =yes, NOT =force):
+sudo tee -a /etc/netdata/charts.d.conf >/dev/null <<'EOF'
+enable_all_charts="yes"
+solar=yes
+EOF
+
+# Set your site coordinates (default: Annapolis, MD):
+sudo sed -i 's/^solar_lat=.*/solar_lat=<YOUR_LAT>/; s/^solar_lon=.*/solar_lon=<YOUR_LON>/' \
+  /etc/netdata/charts.d/solar.conf
+
+sudo systemctl restart netdata
+```
+
+Discord notifications: set `DISCORD_WEBHOOK_URL` and `DEFAULT_RECIPIENT_DISCORD`
+in `/etc/netdata/health_alarm_notify.conf`; the alarms ship with `to: discord`.
 
 ## Troubleshooting
 
