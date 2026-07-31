@@ -25,7 +25,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from threading import Thread
 from urllib.request import urlopen, Request
-from urllib.error import URLError, HTTPError
 from logging.handlers import RotatingFileHandler
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -36,6 +35,7 @@ LISTEN_ADDR = "0.0.0.0"
 LISTEN_PORT = 8080
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 DAYLIGHT_HOURS = (6, 19)   # hour range considered daylight
+PRODUCING_THRESHOLD_W = 10  # watts above which an inverter counts as "producing"
 
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -74,7 +74,6 @@ class HTMLInfoExtractor:
         for cell in raw:
             clean = re.sub(r"<[^>]+>", " ", cell)
             clean = clean.replace("&nbsp;", "").replace("\xa0", "").strip()
-            # collapse whitespace
             clean = re.sub(r"\s+", " ", clean)
             self.values.append(clean)
 
@@ -102,15 +101,29 @@ def parse_float(text: str | None) -> float | None:
 
 
 def extract_serials(html: str) -> list[str]:
-    """Extract inverter serial numbers from URL parameters in HTML."""
-    serials = re.findall(r"SerialNumber=([A-Z0-9]{8,})", html, re.IGNORECASE)
-    # Deduplicate preserving order
+    """Extract inverter serial numbers from HTML.
+
+    Handles two formats:
+    - PVS5/6:  SerialNumber=ABC123456  (URL parameter)
+    - PVS20R1: id='2007359155' type='SMANET-1' (attribute + type marker)
+    """
     seen = set()
     result = []
-    for s in serials:
+
+    # PVS5/6 style: SerialNumber= in URLs
+    for s in re.findall(r"SerialNumber=([A-Z0-9]{8,})", html, re.IGNORECASE):
         if s not in seen:
             seen.add(s)
             result.append(s)
+
+    # PVS20R1 style: id='XXXXXXXX' on accordion headers with inverter type
+    # e.g. <h2 id='2007359155' type='SMANET-1'>Inverter 2007359155</h2>
+    for m in re.finditer(r"id='(\d{8,})'\s+type='[A-Z0-9]+(?:-\d+)?'", html):
+        s = m.group(1)
+        if s not in seen:
+            seen.add(s)
+            result.append(s)
+
     return result
 
 
@@ -149,38 +162,55 @@ class CollectorState:
 state = CollectorState()
 
 
+def parse_pvs_date(text: str | None) -> datetime | None:
+    """Parse gateway date format: '2026,07,30,20,50,58' (comma-separated)."""
+    if not text:
+        return None
+    # Remove "Last Refresh:" prefix if present
+    text = re.sub(r"^Last\s*Refresh[:\s]*", "", text, flags=re.IGNORECASE).strip()
+    # Try comma-separated format: 2026,07,30,20,50,58
+    m = re.search(r"(\d{4}),(\d{1,2}),(\d{1,2}),(\d{1,2}),(\d{1,2}),(\d{1,2})", text)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                           int(m.group(4)), int(m.group(5)), int(m.group(6)))
+        except ValueError:
+            pass
+    # Fallback: MM/DD/YYYY HH:MM:SS
+    m = re.search(r"(\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2})", text)
+    if m:
+        try:
+            return datetime.strptime(m.group(1), "%m/%d/%Y %H:%M:%S")
+        except ValueError:
+            pass
+    return None
+
+
 def collect_once():
-    """
-    Single poll cycle: fetch gateway, extract inverters, populate state.
-    """
+    """Single poll cycle: fetch gateway, extract inverters, populate state."""
     global state
     start = time.time()
     now = datetime.now()
     state.errors.clear()
 
     try:
-        # Fetch main page
-        html = fetch(f"http://{PVS_IP}/")
+        # Fetch DeviceList for serials (main page is Flash/JS on PVS20R1)
+        list_html = fetch(f"http://{PVS_IP}/cgi-bin/dl_cgi?Command=DeviceList")
         state.gateway_up = 1
-        extractor = HTMLInfoExtractor(html)
+        serials = extract_serials(list_html)
+        logger.info("DeviceList: found %d inverter(s) — %s", len(serials), serials)
 
-        logger.info("Main page: %d info fields extracted", len(extractor.all_values))
-
-        # Get inverter serials
-        serials = extract_serials(html)
-        logger.info("Found %d inverter(s): %s", len(serials), serials)
-
-        # If no serials from main page, try DeviceList
+        # If no serials from DeviceList, try main page (older PVS models)
         if not serials:
             try:
-                list_html = fetch(f"http://{PVS_IP}/cgi-bin/dl_cgi?Command=DeviceList")
-                serials = extract_serials(list_html)
+                main_html = fetch(f"http://{PVS_IP}/")
+                serials = extract_serials(main_html)
                 if not serials:
                     # Fallback: look for alphanumeric serial patterns
-                    serials = re.findall(r"\b([A-Z]{1,3}\d{7,11})\b", html, re.IGNORECASE)
+                    serials = re.findall(r"\b([A-Z]{1,3}\d{7,11})\b", list_html, re.IGNORECASE)
                     serials = list(dict.fromkeys(serials))
             except Exception as e:
-                state.errors.append(f"DeviceList fetch failed: {e}")
+                state.errors.append(f"Main page fetch failed: {e}")
 
         # Determine daylight
         is_daylight = DAYLIGHT_HOURS[0] <= now.hour < DAYLIGHT_HOURS[1]
@@ -197,67 +227,50 @@ def collect_once():
                 )
                 inv_ext = HTMLInfoExtractor(inv_html)
                 vals = inv_ext.all_values
+                logger.debug("Inverter %s: %d fields extracted", serial, len(vals))
 
-                # Field mapping (from Node-RED prior art):
-                # [0]=Name, [1]=Total Lifetime Energy, [2]=Last Refresh,
-                # [3]=Avg AC Power, [4]=Model, [5]=Avg AC Voltage,
-                # [6]=Serial Number, [7]=Avg AC Current, [8]=Software Version,
-                # [9]=Avg DC Voltage, [10]=Avg DC Current,
-                # [11]=Avg Heat Sink Temp, [12]=Avg AC Frequency
+                # Field mapping (verified against live PVS20R1):
+                # The inverter NAME/STATUS is in the <h2> header, NOT in <td class='info'>.
+                # Actual <td class='info'> fields:
+                # [0]=Total Lifetime Energy, [1]=Last Refresh, [2]=Avg AC Power,
+                # [3]=Model, [4]=Avg AC Voltage, [5]=Serial Number, [6]=Avg AC Current,
+                # [7]=Software Version, [8]=Avg DC Voltage, [9]=Avg DC Current,
+                # [10]=Avg Heat Sink Temp, [11]=Avg AC Frequency
 
                 inv = {
                     "serial": serial,
-                    "name": vals[0] if len(vals) > 0 else "",
-                    "model": vals[4] if len(vals) > 4 else "",
-                    "avg_ac_power": parse_float(vals[3]) if len(vals) > 3 else None,
-                    "avg_ac_voltage": parse_float(vals[5]) if len(vals) > 5 else None,
-                    "avg_ac_current": parse_float(vals[7]) if len(vals) > 7 else None,
-                    "avg_dc_voltage": parse_float(vals[9]) if len(vals) > 9 else None,
-                    "avg_dc_current": parse_float(vals[10]) if len(vals) > 10 else None,
-                    "avg_heatsink_temp": parse_float(vals[11]) if len(vals) > 11 else None,
-                    "lifetime_energy_kwh": parse_float(vals[1]) if len(vals) > 1 else None,
-                    "last_refresh": vals[2] if len(vals) > 2 else None,
-                    "software_version": vals[8] if len(vals) > 8 else None,
+                    "model": vals[3] if len(vals) > 3 else "",
+                    "avg_ac_power": parse_float(vals[2]) if len(vals) > 2 else None,
+                    "avg_ac_voltage": parse_float(vals[4]) if len(vals) > 4 else None,
+                    "avg_ac_current": parse_float(vals[6]) if len(vals) > 6 else None,
+                    "avg_dc_voltage": parse_float(vals[8]) if len(vals) > 8 else None,
+                    "avg_dc_current": parse_float(vals[9]) if len(vals) > 9 else None,
+                    "avg_heatsink_temp": parse_float(vals[10]) if len(vals) > 10 else None,
+                    "lifetime_energy_kwh": parse_float(vals[0]) if len(vals) > 0 else None,
+                    "last_refresh": vals[1] if len(vals) > 1 else None,
+                    "software_version": vals[7] if len(vals) > 7 else None,
                 }
 
                 # Power is reported in kW -> convert to W
                 power_w = inv["avg_ac_power"] * 1000 if inv["avg_ac_power"] else 0
-                inv["power_w"] = power_w
+                inv["power_w"] = round(power_w, 1)
                 total_power += power_w
 
                 # Inverter state: 0=unknown, 1=offline, 2=idle, 3=producing
-                if power_w > 10:  # > 10W = definitely producing
+                if power_w > PRODUCING_THRESHOLD_W:
                     inv["state"] = 3
                     producing_count += 1
                 elif inv["avg_ac_voltage"] is not None and inv["avg_ac_voltage"] > 0:
-                    # Has voltage but no power — could be idle or degraded
                     inv["state"] = 2
                 else:
                     inv["state"] = 1
 
-                # Calculate data age
-                if inv["last_refresh"]:
-                    lr_match = re.search(
-                        r"(\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2})",
-                        inv["last_refresh"]
-                    )
-                    if lr_match:
-                        try:
-                            lr_dt = datetime.strptime(lr_match.group(1), "%m/%d/%Y %H:%M:%S")
-                            age = (now - lr_dt).total_seconds()
-                            inv["data_age_s"] = max(0, age)
-                        except ValueError:
-                            inv["data_age_s"] = None
-                    else:
-                        inv["data_age_s"] = None
-                else:
-                    inv["data_age_s"] = None
-
                 inverters.append(inv)
                 logger.info(
-                    "Inverter %s: %.1fW AC, %.1fV AC, %.1fC heatsink, state=%d",
-                    serial, power_w, inv["avg_ac_voltage"] or 0,
-                    inv["avg_heatsink_temp"] or 0, inv["state"]
+                    "Inverter %s (%s): %.1fW AC, %.1fV AC, %.1fC heatsink, state=%d",
+                    serial, inv["model"], inv["power_w"],
+                    inv["avg_ac_voltage"] or 0, inv["avg_heatsink_temp"] or 0,
+                    inv["state"]
                 )
 
             except Exception as e:
@@ -272,15 +285,15 @@ def collect_once():
         # System state: 0=unknown, 1=offline, 2=partial, 3=producing
         if is_daylight and len(inverters) > 0:
             if producing_count == len(inverters):
-                state.system_state = 3  # all producing
+                state.system_state = 3
             elif producing_count > 0:
-                state.system_state = 2  # some producing, some not
+                state.system_state = 2
             else:
-                state.system_state = 1  # none producing during daylight
+                state.system_state = 1
         elif not is_daylight:
-            state.system_state = 0  # nighttime — unknown
+            state.system_state = 0
         else:
-            state.system_state = 0  # no inverters found
+            state.system_state = 0
 
         logger.info(
             "System state=%d (daylight=%s, %d/%d producing, %.1fW total)",
@@ -299,7 +312,7 @@ def collect_once():
 
 def poll_loop():
     """Background thread: polls every POLL_INTERVAL seconds."""
-    collect_once()  # initial poll immediately
+    collect_once()
     while True:
         try:
             time.sleep(POLL_INTERVAL)
@@ -314,7 +327,7 @@ def format_metrics() -> str:
     """Generate Prometheus text-format metrics from current state."""
     lines = []
 
-    def metric(name: str, value: float | int, labels: dict | None = None,
+    def metric(name: str, value, labels: dict | None = None,
                metric_type: str = "gauge", help_text: str = ""):
         if help_text:
             lines.append(f"# HELP {name} {help_text}")
@@ -361,9 +374,6 @@ def format_metrics() -> str:
         if inv.get("lifetime_energy_kwh") is not None:
             metric("pvs_inverter_lifetime_energy_kwh", inv["lifetime_energy_kwh"], lbl,
                    help_text="Total lifetime energy produced (kWh)")
-        if inv.get("data_age_s") is not None:
-            metric("pvs_inverter_data_age_seconds", inv["data_age_s"], lbl,
-                   help_text="Seconds since last refresh timestamp")
 
     # Aggregates
     metric("pvs_inverter_count", state.inverter_count,
@@ -377,13 +387,16 @@ def format_metrics() -> str:
            metric_type="counter", help_text="Total successful poll cycles")
     metric("pvs_scrape_failures", state.scrape_failures,
            metric_type="counter", help_text="Total failed poll cycles")
-    metric("pvs_uptime_seconds", state.uptime(),
+    metric("pvs_uptime_seconds", round(state.uptime(), 1),
            metric_type="counter", help_text="Server uptime (seconds)")
 
     return "\n".join(lines) + "\n"
 
 
 # ── HTTP Server ──────────────────────────────────────────────────────────────
+
+server: HTTPServer | None = None  # module-level for signal handlers
+
 
 class MetricsHandler(BaseHTTPRequestHandler):
     """Serve Prometheus metrics on /metrics, health on /."""
@@ -402,7 +415,6 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
         elif self.path == "/":
-            # Health check + quick status JSON
             status = {
                 "gateway_up": bool(state.gateway_up),
                 "system_state": state.system_state,
@@ -415,7 +427,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 "scrape_success": state.scrape_success,
                 "scrape_failures": state.scrape_failures,
             }
-            body = json.dumps(status, indent=2).encode("utf-8")
+            body = json.dumps(status, indent=2, default=str).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -423,7 +435,6 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
         elif self.path == "/debug":
-            # Dump raw data for troubleshooting
             debug = {
                 "state": {
                     "gateway_up": state.gateway_up,
@@ -449,19 +460,26 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"Not found. Try /metrics or /\n")
 
 
+def shutdown_handler(signum, frame):
+    """Graceful shutdown: stop server and exit without hanging."""
+    logger.info("Shutting down (signal %s)...", signal.Signals(signum).name)
+    global server
+    if server:
+        # shutdown() blocks until serve_forever() returns, so call it in a thread
+        Thread(target=server.shutdown, daemon=True).start()
+    # Give the server a moment to stop
+    time.sleep(0.5)
+    sys.exit(0)
+
+
 def run_server():
     """Start the HTTP metrics server."""
+    global server, POLL_INTERVAL
     server = HTTPServer((LISTEN_ADDR, LISTEN_PORT), MetricsHandler)
     logger.info("Serving on http://%s:%d/metrics", LISTEN_ADDR, LISTEN_PORT)
 
-    # Graceful shutdown on SIGTERM/SIGINT
-    def shutdown(signum, frame):
-        logger.info("Shutting down...")
-        server.shutdown()
-        sys.exit(0)
-
-    signal.signal(signal.SIGTERM, shutdown)
-    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    signal.signal(signal.SIGINT, shutdown_handler)
 
     server.serve_forever()
 
@@ -483,7 +501,6 @@ def main():
     if args.daemon:
         pid = os.fork()
         if pid > 0:
-            # Parent — print PID and exit
             with open(LOG_DIR / "monitor.pid", "w") as f:
                 f.write(str(pid))
             print(f"Started as PID {pid}")
